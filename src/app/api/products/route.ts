@@ -1,8 +1,44 @@
 import { NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 
+export const dynamic = 'force-dynamic'
+
 export async function GET() {
   try {
+    // Release expired reservations lazily to bypass Vercel Hobby cron limitations
+    const expiredReservations = await prisma.reservation.findMany({
+      where: {
+        status: 'PENDING',
+        expiresAt: { lt: new Date() }
+      }
+    })
+
+    if (expiredReservations.length > 0) {
+      const operations = []
+      for (const res of expiredReservations) {
+        operations.push(
+          prisma.reservation.update({
+            where: { id: res.id },
+            data: { status: 'RELEASED' }
+          })
+        )
+        operations.push(
+          prisma.stock.update({
+            where: {
+              productId_warehouseId: {
+                productId: res.productId,
+                warehouseId: res.warehouseId
+              }
+            },
+            data: {
+              reservedUnits: { decrement: res.quantity }
+            }
+          })
+        )
+      }
+      await prisma.$transaction(operations)
+    }
+
     const products = await prisma.product.findMany({
       include: {
         stock: {
